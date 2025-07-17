@@ -1,1 +1,10 @@
-# Placeholder content for requirements.txt
+streamlit>=1.37
+sqlalchemy>=2.0
+psycopg2-binary
+pandas>=2.0
+pytz
+passlib[bcrypt]
+pillow
+python-dateutil
+pdf2image
+pytesseract

@@ -1,1 +1,10 @@
-# Placeholder content for .streamlit/config.toml
+[server]
+headless = true
+enableCORS = false
+
+[theme]
+primaryColor = "#1E88E5"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F5"
+textColor = "#000000"
+font = "sans serif"
