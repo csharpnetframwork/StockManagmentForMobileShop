@@ -2,23 +2,25 @@ import streamlit as st
 from auth import require_role
 from db import SessionLocal, Product, StockMovement
 import pandas as pd
-import io
 
-REQUIRED_COLS = ["name","sku","category","price","qty"]
+REQUIRED_COLS = ["name", "sku", "category", "price", "qty"]
 OPTIONAL_COLS = ["imei"]
 
+
 def app():
-    user = require_role(["owner","admin","employee"])
+    user = require_role(["owner", "admin", "employee"])
     st.title("Inventory")
 
     session = SessionLocal()
 
-    # ------------------ Manual Add ------------------
+    # ------------------------------------------------------------------
+    # Manual Add
+    # ------------------------------------------------------------------
     with st.expander("Add New Product"):
         sku = st.text_input("SKU / Code")
         imei = st.text_input("IMEI (optional)")
         name = st.text_input("*Name / Model")
-        category = st.selectbox("Category", ["phone","accessory","service"])
+        category = st.selectbox("Category", ["phone", "accessory", "service"])
         cost_price = st.number_input("Cost Price", min_value=0.0, step=100.0)
         sell_price = st.number_input("Sell Price", min_value=0.0, step=100.0)
         qty = st.number_input("Initial Qty", min_value=0, step=1)
@@ -34,33 +36,53 @@ def app():
                     category=category,
                     cost_price=cost_price,
                     sell_price=sell_price,
-                    qty_on_hand=qty
+                    qty_on_hand=qty,
                 )
                 session.add(p)
                 session.flush()
                 if qty:
-                    session.add(StockMovement(product=p, change_qty=qty, reason="purchase", user_id=user["id"]))
+                    session.add(
+                        StockMovement(
+                            product=p,
+                            change_qty=qty,
+                            reason="purchase",
+                            user_id=user["id"],
+                        )
+                    )
                 session.commit()
                 st.success(f"Added {name}.")
                 st.rerun()
 
-    # ------------------ CSV Bulk Upload ------------------
-    st.subheader("Upload Stock via CSV")
-    st.caption("Required columns: name,sku,category,price,qty. Optional: imei.")
-    uploaded = st.file_uploader("Choose CSV", type=["csv"], key="inv_csv")
-    if st.button("Download Sample CSV"):
-        st.download_button(
-            label="Download sample_stock.csv",
-            data="name,sku,category,price,qty,imei\nDemo Phone C,MOB003,phone,20000,4,123456789012347\nCharger 20W,ACC020,accessory,900,15,\n",
-            file_name="sample_stock.csv",
-            mime="text/csv",
-            key="sampledl_btn"
-        )
+    # ------------------------------------------------------------------
+    # CSV / Excel Bulk Upload
+    # ------------------------------------------------------------------
+    st.subheader("Upload Stock via CSV/Excel")
+    st.caption("Required: name,sku,category,price,qty. Optional: imei.")
+    uploaded = st.file_uploader(
+        "Choose File", type=["csv", "xlsx", "xls"], key="inv_csv"
+    )
+
+    sample_csv = (
+        "name,sku,category,price,qty,imei\n"
+        "Demo Phone C,MOB003,phone,20000,4,123456789012347\n"
+        "Charger 20W,ACC020,accessory,900,15,\n"
+    )
+    st.download_button(
+        "Download Sample Stock Template (CSV)",
+        data=sample_csv,
+        file_name="sample_stock.csv",
+        mime="text/csv",
+        key="inv_sample_dl",
+    )
+
     if uploaded is not None:
         try:
-            df = pd.read_csv(uploaded)
+            if uploaded.name.lower().endswith(".csv"):
+                df = pd.read_csv(uploaded)
+            else:
+                df = pd.read_excel(uploaded)
         except Exception as e:
-            st.error(f"Error reading CSV: {e}")
+            st.error(f"Error reading file: {e}")
             df = None
 
         if df is not None:
@@ -71,11 +93,11 @@ def app():
             else:
                 st.write("Preview:")
                 st.dataframe(df.head(), use_container_width=True)
-                if st.button("Import CSV Rows", type="primary", key="import_csv_btn"):
+                if st.button("Import CSV/Excel Rows", type="primary", key="import_csv_btn"):
                     added = 0
                     updated = 0
                     for _, row in df.iterrows():
-                        name = str(row.get("name","")).strip()
+                        name = str(row.get("name", "")).strip()
                         if not name:
                             continue
                         sku = str(row.get("sku") or "").strip() or None
@@ -84,55 +106,93 @@ def app():
                         qty = int(row.get("qty") or 0)
                         imei = str(row.get("imei") or "").strip() or None
 
-                        # match existing by IMEI if provided, else SKU+Name
                         prod = None
                         if imei:
-                            prod = session.query(Product).filter(Product.imei==imei).first()
+                            prod = (
+                                session.query(Product)
+                                .filter(Product.imei == imei)
+                                .first()
+                            )
                         if not prod and sku:
-                            prod = session.query(Product).filter(Product.sku==sku, Product.name==name).first()
+                            prod = (
+                                session.query(Product)
+                                .filter(Product.sku == sku, Product.name == name)
+                                .first()
+                            )
+                        if not prod and name:
+                            prod = (
+                                session.query(Product)
+                                .filter(Product.name == name)
+                                .first()
+                            )
+
                         if not prod:
                             prod = Product(
                                 sku=sku,
                                 imei=imei,
                                 name=name,
                                 category=category,
-                                cost_price=price,  # treat price as cost; user can edit later
+                                cost_price=price,
                                 sell_price=price,
-                                qty_on_hand=qty
+                                qty_on_hand=qty,
                             )
                             session.add(prod)
                             session.flush()
                             if qty:
-                                session.add(StockMovement(product=prod, change_qty=qty, reason="purchase", user_id=user["id"]))
+                                session.add(
+                                    StockMovement(
+                                        product=prod,
+                                        change_qty=qty,
+                                        reason="purchase",
+                                        user_id=user["id"],
+                                    )
+                                )
                             added += 1
                         else:
                             prod.qty_on_hand += qty
-                            if price and prod.sell_price == 0:
+                            # set sell_price if not yet priced
+                            if price and float(prod.sell_price or 0) == 0:
                                 prod.sell_price = price
-                            session.add(StockMovement(product=prod, change_qty=qty, reason="purchase", user_id=user["id"]))
+                            session.add(
+                                StockMovement(
+                                    product=prod,
+                                    change_qty=qty,
+                                    reason="purchase",
+                                    user_id=user["id"],
+                                )
+                            )
                             updated += 1
                     session.commit()
-                    st.success(f"Imported CSV. Added {added}, updated {updated}.")
+                    st.success(f"Imported. Added {added}, updated {updated}.")
                     st.rerun()
 
-    # ------------------ List Inventory ------------------
+    # ------------------------------------------------------------------
+    # Inventory Table
+    # ------------------------------------------------------------------
     products = session.query(Product).order_by(Product.name).all()
     if products:
-        df = pd.DataFrame([{
-            "ID": p.id,
-            "SKU": p.sku,
-            "IMEI": p.imei,
-            "Name": p.name,
-            "Category": p.category,
-            "Cost": float(p.cost_price),
-            "Sell": float(p.sell_price),
-            "Qty": p.qty_on_hand
-        } for p in products])
+        df = pd.DataFrame(
+            [
+                {
+                    "ID": p.id,
+                    "SKU": p.sku,
+                    "IMEI": p.imei,
+                    "Name": p.name,
+                    "Category": p.category,
+                    "Cost": float(p.cost_price),
+                    "Sell": float(p.sell_price),
+                    "Qty": p.qty_on_hand,
+                }
+                for p in products
+            ]
+        )
         st.dataframe(df, use_container_width=True)
     else:
         st.info("No products.")
 
-    # ------------------ Adjust Stock ------------------
+    # ------------------------------------------------------------------
+    # Adjust Stock
+    # ------------------------------------------------------------------
     with st.expander("Adjust Stock"):
         prod_options = {f"{p.name} (ID {p.id})": p.id for p in products}
         if prod_options:
@@ -142,7 +202,14 @@ def app():
                 pid = prod_options[prod_choice]
                 prod = session.get(Product, pid)
                 prod.qty_on_hand += adj_qty
-                session.add(StockMovement(product=prod, change_qty=adj_qty, reason="adjustment", user_id=user["id"]))
+                session.add(
+                    StockMovement(
+                        product=prod,
+                        change_qty=adj_qty,
+                        reason="adjustment",
+                        user_id=user["id"],
+                    )
+                )
                 session.commit()
                 st.success("Stock updated.")
                 st.rerun()
