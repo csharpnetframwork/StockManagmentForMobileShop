@@ -13,9 +13,7 @@ def app():
 
     session = SessionLocal()
 
-    # ------------------------------------------------------------------
-    # Customer Info
-    # ------------------------------------------------------------------
+    # ------------------------ Customer Info ------------------------
     st.header("Customer Info")
     colA, colB = st.columns(2)
     with colA:
@@ -23,9 +21,7 @@ def app():
     with colB:
         cust_name = st.text_input("Customer Name")
 
-    # ------------------------------------------------------------------
-    # Load in-stock products for selection
-    # ------------------------------------------------------------------
+    # ------------------------ Load Products ------------------------
     products = session.query(Product).order_by(Product.name).all()
     prod_map = {
         f"{p.name} (₹{p.sell_price}, Qty {p.qty_on_hand})": p
@@ -35,9 +31,7 @@ def app():
 
     cart = st.session_state.setdefault("cart", [])
 
-    # ------------------------------------------------------------------
-    # Manual Add to Cart
-    # ------------------------------------------------------------------
+    # ------------------------ Manual Add ------------------------
     st.header("Add Product Manually")
     with st.form("add_to_cart_form", clear_on_submit=True):
         prod_choice = st.selectbox(
@@ -62,9 +56,7 @@ def app():
                 )
                 st.success(f"Added {qty} x {p.name} to cart.")
 
-    # ------------------------------------------------------------------
-    # Bulk Add From File (CSV / Excel)
-    # ------------------------------------------------------------------
+    # ------------------------ Bulk Add (Excel/CSV) ------------------------
     st.subheader("Bulk Add from Excel/CSV")
     st.caption(
         "Columns: imei, sku, name, qty, price. At least one of imei/sku/name required; qty required."
@@ -74,7 +66,6 @@ def app():
         "Upload Sale Items", type=["csv", "xlsx", "xls"], key="bulk_sale_file"
     )
 
-    # Downloadable template
     sample_csv_data = (
         "imei,sku,name,qty,price\n"
         "123456789012345,MOB001,Demo Phone A,1,12000\n"
@@ -88,7 +79,7 @@ def app():
         key="sale_template_dl",
     )
 
-    bulk_df = None
+    addable_rows = []
     if bulk_file is not None:
         try:
             if bulk_file.name.lower().endswith(".csv"):
@@ -99,95 +90,86 @@ def app():
             st.error(f"Could not read file: {e}")
             bulk_df = None
 
-    if bulk_df is not None:
-        bulk_df.columns = [c.strip().lower() for c in bulk_df.columns]
+        if bulk_df is not None:
+            bulk_df.columns = [c.strip().lower() for c in bulk_df.columns]
+            if "qty" not in bulk_df.columns and "quantity" in bulk_df.columns:
+                bulk_df["qty"] = bulk_df["quantity"]
+            for col in ["imei", "sku", "name", "qty", "price"]:
+                if col not in bulk_df.columns:
+                    bulk_df[col] = None
 
-        # Support 'quantity' alias for qty
-        if "qty" not in bulk_df.columns and "quantity" in bulk_df.columns:
-            bulk_df["qty"] = bulk_df["quantity"]
+            preview_rows = []
+            for _, r in bulk_df.iterrows():
+                imei_val = str(r.get("imei") or "").strip()
+                sku_val = str(r.get("sku") or "").strip()
+                name_val = str(r.get("name") or "").strip()
+                qty_val = r.get("qty")
+                price_val = r.get("price")
 
-        # Ensure expected cols exist
-        for col in ["imei", "sku", "name", "qty", "price"]:
-            if col not in bulk_df.columns:
-                bulk_df[col] = None
+                try:
+                    qty_val = int(qty_val)
+                except Exception:
+                    qty_val = 0
 
-        preview_rows = []
-        addable_rows = []
+                prod = None
+                if imei_val:
+                    prod = session.query(Product).filter(Product.imei == imei_val).first()
+                if not prod and sku_val:
+                    prod = session.query(Product).filter(Product.sku == sku_val).first()
+                if not prod and name_val:
+                    prod = (
+                        session.query(Product)
+                        .filter(Product.name.ilike(name_val))
+                        .first()
+                    )
 
-        for _, r in bulk_df.iterrows():
-            imei_val = str(r.get("imei") or "").strip()
-            sku_val = str(r.get("sku") or "").strip()
-            name_val = str(r.get("name") or "").strip()
-            qty_val = r.get("qty")
-            price_val = r.get("price")
+                if not prod:
+                    status = "Not found"
+                elif qty_val <= 0:
+                    status = "Bad qty"
+                elif qty_val > prod.qty_on_hand:
+                    status = f"Stock short (have {prod.qty_on_hand})"
+                else:
+                    status = "OK"
+                    addable_rows.append(
+                        {
+                            "product_id": prod.id,
+                            "name": prod.name,
+                            "qty": qty_val,
+                            "price": float(price_val)
+                            if pd.notna(price_val)
+                            else float(prod.sell_price),
+                            "imei": imei_val or prod.imei,
+                        }
+                    )
 
-            # qty validation
-            try:
-                qty_val = int(qty_val)
-            except Exception:
-                qty_val = 0
-
-            # match product
-            prod = None
-            if imei_val:
-                prod = session.query(Product).filter(Product.imei == imei_val).first()
-            if not prod and sku_val:
-                prod = session.query(Product).filter(Product.sku == sku_val).first()
-            if not prod and name_val:
-                prod = (
-                    session.query(Product)
-                    .filter(Product.name.ilike(name_val))
-                    .first()
-                )
-
-            if not prod:
-                status = "Not found"
-            elif qty_val <= 0:
-                status = "Bad qty"
-            elif qty_val > prod.qty_on_hand:
-                status = f"Stock short (have {prod.qty_on_hand})"
-            else:
-                status = "OK"
-                addable_rows.append(
+                preview_rows.append(
                     {
-                        "product_id": prod.id,
-                        "name": prod.name,
-                        "qty": qty_val,
-                        "price": float(price_val)
-                        if pd.notna(price_val)
-                        else float(prod.sell_price),
-                        "imei": imei_val or prod.imei,
+                        "Matched": prod.name if prod else "",
+                        "IMEI": imei_val,
+                        "SKU": sku_val,
+                        "Name": name_val,
+                        "Qty": qty_val,
+                        "Price": price_val,
+                        "Status": status,
                     }
                 )
 
-            preview_rows.append(
-                {
-                    "Matched": prod.name if prod else "",
-                    "IMEI": imei_val,
-                    "SKU": sku_val,
-                    "Name": name_val,
-                    "Qty": qty_val,
-                    "Price": price_val,
-                    "Status": status,
-                }
-            )
+            st.write("Preview Import:")
+            st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
 
-        st.write("Preview Import:")
-        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True)
-
-        if addable_rows:
-            if st.button(
+            add_bulk = st.button(
                 f"Add {len(addable_rows)} Valid Rows to Cart", key="bulk_add_btn"
-            ):
-                cart.extend(addable_rows)
-                st.success(f"Added {len(addable_rows)} items to cart.")
-                st.rerun()
-        else:
-            st.info("No valid rows to add.")
+            )
+            if add_bulk:
+                if not addable_rows:
+                    st.warning("No valid rows to add.")
+                else:
+                    cart.extend(addable_rows)
+                    st.success(f"Added {len(addable_rows)} items to cart.")
+                    st.rerun()
 
-    # ------------------------------------------------------------------
-    # Cart
-    # ------------------------------------------------------------------
+    # ------------------------ Cart ------------------------
     if cart:
         st.subheader("Cart")
         df = pd.DataFrame(cart)
@@ -198,9 +180,7 @@ def app():
     else:
         subtotal = 0.0
 
-    # ------------------------------------------------------------------
-    # Payment Section
-    # ------------------------------------------------------------------
+    # ------------------------ Payment ------------------------
     st.header("Payment")
     pay_type = st.radio("Payment Type", ["cash", "emi"], horizontal=True)
 
@@ -231,9 +211,7 @@ def app():
             down_payment = st.number_input(
                 "Down Payment (₹)", min_value=0.0, step=100.0, value=0.0
             )
-            tenure = st.number_input(
-                "Tenure (months)", min_value=1, step=1, value=3
-            )
+            tenure = st.number_input("Tenure (months)", min_value=1, step=1, value=3)
             interest = st.number_input(
                 "Interest Rate (%)", min_value=0.0, step=0.5, value=0.0
             )
@@ -251,16 +229,14 @@ def app():
             }
             st.write(f"**EMI Amount (approx): ₹{emi_amount:,.2f} / month**")
 
-    # ------------------------------------------------------------------
-    # Submit Sale
-    # ------------------------------------------------------------------
+    # ------------------------ Submit ------------------------
     submit_sale = st.button("Submit Sale", type="primary")
     if submit_sale:
         if not cart or subtotal <= 0:
             st.error("Cart is empty. Add products before saving.")
             st.stop()
 
-        # create/find customer
+        # find/create customer
         cust = None
         if cust_phone:
             cust = (
@@ -286,7 +262,7 @@ def app():
         session.add(sale)
         session.flush()
 
-        # items
+        # sale items
         for line in cart:
             p = session.get(Product, line["product_id"])
             qty = line["qty"]
@@ -311,7 +287,7 @@ def app():
                 )
             )
 
-        # EMI
+        # EMI record
         if pay_type == "emi" and emi_info.get("company"):
             comp = emi_info["company"]
             em = EmiDetail(
